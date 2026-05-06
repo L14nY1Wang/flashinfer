@@ -111,9 +111,9 @@ class DenseGemmKernel:
         self.enable_pdl = enable_pdl
 
         self.tiled_mma = None
-        self.occupancy = 1
+        self.occupancy = 1 # TODO 能否设置为2隐藏延迟 要考虑寄存器压力
         self.num_mma_warps = 8
-        self.tma_load_warp_id = self.num_mma_warps
+        self.tma_load_warp_id = self.num_mma_warps 
         self.num_threads_per_warp = 32
         self.threads_per_cta = (
             self.num_mma_warps + 1  # 1 warp for DMA
@@ -944,15 +944,15 @@ class DenseGemmKernel:
                             tCsB_p[None, None, k_block_next],
                             tCrB_copy_view[None, None, k_block_next],
                         )
-
-                        tCsSFA_p_filtered = cute.filter_zeros(tCsSFA_p)
-                        tCsSFB_p_filtered = cute.filter_zeros(tCsSFB_p)
-                        tCrSFA_copy_view_filtered = cute.filter_zeros(
-                            tCrSFA_tile_copy_view
-                        )
-                        tCrSFB_copy_view_filtered = cute.filter_zeros(
-                            tCrSFB_tile_copy_view
-                        )
+                        # DO 重复调用
+                        # tCsSFA_p_filtered = cute.filter_zeros(tCsSFA_p)
+                        # tCsSFB_p_filtered = cute.filter_zeros(tCsSFB_p)
+                        # tCrSFA_copy_view_filtered = cute.filter_zeros(
+                        #     tCrSFA_tile_copy_view
+                        # )
+                        # tCrSFB_copy_view_filtered = cute.filter_zeros(
+                        #     tCrSFB_tile_copy_view
+                        # )
                         cute.copy(
                             smem_tiled_copy_SFA,
                             tCsSFA_p_filtered[None, None, k_block_next],
@@ -985,14 +985,15 @@ class DenseGemmKernel:
                             tCsB_p[None, None, k_block_next],
                             tCrB_copy_view[None, None, k_block_next],
                         )
-                        tCsSFA_p_filtered = cute.filter_zeros(tCsSFA_p)
-                        tCsSFB_p_filtered = cute.filter_zeros(tCsSFB_p)
-                        tCrSFA_copy_view_filtered = cute.filter_zeros(
-                            tCrSFA_tile_copy_view
-                        )
-                        tCrSFB_copy_view_filtered = cute.filter_zeros(
-                            tCrSFB_tile_copy_view
-                        )
+                        # DO 重复调用
+                        # tCsSFA_p_filtered = cute.filter_zeros(tCsSFA_p)
+                        # tCsSFB_p_filtered = cute.filter_zeros(tCsSFB_p)
+                        # tCrSFA_copy_view_filtered = cute.filter_zeros(
+                        #     tCrSFA_tile_copy_view
+                        # )
+                        # tCrSFB_copy_view_filtered = cute.filter_zeros(
+                        #     tCrSFB_tile_copy_view
+                        # )
                         cute.copy(
                             smem_tiled_copy_SFA,
                             tCsSFA_p_filtered[None, None, k_block_next],
@@ -1099,11 +1100,13 @@ class DenseGemmKernel:
                                     (None, mma_m_in_epi, mma_n_in_epi)
                                 ]
                                 tRS_rAcc_slice = tRS_rAcc[(None, mma_m, mma_n)]
+                                # TODO 逐元素拷贝 效率低
                                 for elem_idx in cutlass.range_constexpr(
                                     cute.size(tRS_rD_slice)
                                 ):
                                     tRS_rD_slice[elem_idx] = tRS_rAcc_slice[elem_idx]
 
+                        # TODO 在双重循环内创建张量 可提出循环外复用
                         # Type conversion with alpha scaling
                         tRS_rD_out = cute.make_rmem_tensor(
                             tRS_rD_layout.shape, self.c_dtype
