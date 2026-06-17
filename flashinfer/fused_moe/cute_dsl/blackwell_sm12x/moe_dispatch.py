@@ -45,6 +45,7 @@ _NVFP4_BLOCK_SIZE = 16
 _LEVEL_TILE_M = 128
 _LEVEL_TILE_N = 128
 _DYNAMIC_SLICE_CHUNK = 1
+_DYNAMIC_SMALL_TILE_MAX_PAIRS = 640
 SF_VEC_SIZE = 16
 _FORCE_MOE_W4A16_ENV = "FLASHINFER_B12X_FORCE_MOE_W4A16"
 _MICRO_SHARE_INPUT_ACROSS_EXPERTS = (
@@ -54,6 +55,9 @@ _MICRO_SHARE_INPUT_ACROSS_EXPERTS = (
 # Micro kernel cutover thresholds (routed pairs)
 _MICRO_COMPACT_CUTOVER_PAIRS = 20
 _MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 40
+# NOTE: In b12x (377083e) this was lowered to 64 after retiring the static kernel
+# and moving sub-128 workload to dynamic. FlashInfer still uses the static kernel
+# for the decode band, so keep the original cutover at 640.
 _STATIC_COMPACT_CUTOVER_PAIRS_DEFAULT = 640
 _STATIC_COMPACT_CUTOVER_PAIRS = _STATIC_COMPACT_CUTOVER_PAIRS_DEFAULT
 _STATIC_COMPACT_CUTOVER_PAIRS_CACHE: Dict[str, int] = {}
@@ -68,6 +72,13 @@ _MICRO_MAC_LADDER: Tuple[Tuple[int, int], ...] = (
     (16, 63),
     (20, 84),
 )
+# Static is retired. Dynamic MAC ladder replaces the old static one.
+_DYNAMIC_MAC_LADDER: Tuple[Tuple[int, int], ...] = (
+    (640, 188),
+    (1024, 147),
+)
+# Legacy ladder kept for backward compatibility with static kernel.
+# When static kernel is fully retired, this can be removed.
 _STATIC_MAC_LADDER: Tuple[Tuple[int, int], ...] = (
     (24, 148),
     (32, 169),
@@ -231,6 +242,59 @@ def _select_moe_mma_tiler_mn(routed_rows: int, n: int) -> Tuple[int, int]:
     if routed_rows <= 128 and coarse_tiles <= max(1, sm_count // 2):
         return (64, 128)
     return (128, 128)
+
+
+def _dynamic_tile_mn_override() -> Tuple[int, int] | None:
+    """Read B12X_DYNAMIC_TILE_MN or FLASHINFER_DYNAMIC_TILE_MN env override."""
+    raw = _first_env("FLASHINFER_B12X_DYNAMIC_TILE_MN", "B12X_DYNAMIC_TILE_MN")
+    if raw is None:
+        return None
+    parts = raw.strip().split(",")
+    if len(parts) != 2:
+        raise ValueError(
+            f"B12X_DYNAMIC_TILE_MN must be 'M,N' (got {raw!r})"
+        )
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError as exc:
+        raise ValueError(
+            f"B12X_DYNAMIC_TILE_MN must be two ints (got {raw!r})"
+        ) from exc
+
+
+def _select_dynamic_tile_mn(
+    routed_rows: int,
+    n: int,
+    activation_precision: str = "fp4",
+) -> Tuple[int, int]:
+    """Tile planner for the dynamic kernel.
+
+    Keyed on the routed-row workload (num_tokens * num_topk). The scratch plan
+    and the kernel build both call this with the same routed_rows (per-launch),
+    so they select the SAME tile — a mismatch mis-sizes the grouped task/scale
+    scratch (and the grouped geometry is itself routed_rows-based, so the choice
+    is consistent with the allocation).
+
+    tile_n is fixed at 128. A small tile_m cuts per-expert M-tile padding and
+    dead rows in the grouped GEMM for small decode-band workloads; 128 amortizes
+    best for large prefill. An explicit env override wins (for benchmarking).
+    """
+    activation_precision = _normalize_activation_precision(activation_precision)
+    ovr = _dynamic_tile_mn_override()
+    if ovr is not None:
+        return ovr
+    routed_rows = max(1, int(routed_rows))
+    # NOTE: sub-128 tile (16) is currently disabled pending TMA partition
+    # validation for dynamic-shaped tensors. The kernel code supports it
+    # (sa_tile_shape_mk, atom_shape adaptive), but the TMA GMEM view
+    # created by _make_tma_atoms_and_tensors produces dynamic first-mode
+    # shapes that the partition rejects. When enabled, uncomment below.
+    # if routed_rows <= _DYNAMIC_SMALL_TILE_MAX_PAIRS:
+    #     tile_m = 16
+    # else:
+    #     tile_m = _LEVEL_TILE_M  # 128 (large prefill)
+    tile_m = _LEVEL_TILE_M  # 128
+    return (tile_m, _LEVEL_TILE_N)
 
 
 def _as_grouped_scale_view(
@@ -1251,13 +1315,15 @@ def allocate_sm120_dynamic_workspace(
             "allocate_sm120_dynamic_workspace only supports quant_mode='nvfp4'; "
             "use allocate_sm120_moe_workspace(..., quant_mode='w4a16') for W4A16."
         )
-    tile_m = _level_tile_m(activation_precision)
+    tile_m, tile_n = _select_dynamic_tile_mn(
+        routed_rows, n, activation_precision=activation_precision
+    )
     physical_tiles, _, max_tasks = _dynamic_task_geometry(
         state_E,
         n,
         routed_rows,
         tile_m=tile_m,
-        tile_n=_level_tile_n(activation_precision),
+        tile_n=tile_n,
     )
     rows_padded = physical_tiles * tile_m
     cols_pad_k = _align_up(k // _NVFP4_BLOCK_SIZE, 4)
@@ -1511,11 +1577,14 @@ def _get_dynamic_kernel(
     )
     sf_vec_size = 16
     sm_count = get_num_sm(torch.device("cuda"))
-    mac = min(get_max_active_clusters(1), sm_count)
-    mma_tiler_mn = (
-        _level_tile_m(activation_precision),
-        _level_tile_n(activation_precision),
+    routed_rows = m * num_topk
+    mma_tiler_mn = _select_dynamic_tile_mn(
+        routed_rows, n, activation_precision=activation_precision
     )
+    mac = min(get_max_active_clusters(1), sm_count)
+    tuned_mac = _lookup_mac_ladder(_DYNAMIC_MAC_LADDER, routed_rows)
+    if tuned_mac is not None:
+        mac = min(tuned_mac, mac)
 
     cache_key = (
         "dynamic",
@@ -1816,7 +1885,7 @@ def launch_sm120_dynamic_moe(
         workspace.token_weights.data_ptr(),
         num_tokens,
         workspace.max_rows,
-        workspace.physical_tiles_capacity * _level_tile_m(activation_precision),
+        workspace.max_rows,  # rows_padded — must match scale storage sizing
         workspace.task_capacity,
         workspace.physical_tiles_capacity,
     )

@@ -1,7 +1,19 @@
 """
 MoEStaticKernel — static-scheduled routed NVFP4 MoE kernel for SM120/SM121 (Blackwell).
 
-Ported from the b12x kernel library to FlashInfer.
+.. deprecated::
+    The static kernel is being retired in favor of the dynamic kernel which
+    now supports sub-128 M-tiles ({16,32,64,128}×128). New workloads should
+    route through the dynamic backend (see moe_dynamic_kernel.py). The static
+    kernel remains available for backward compatibility during the transition
+    period but will be removed in a future release.
+
+    Transition timeline:
+      - Step 1 (current): dynamic kernel gains sub-128 tile support
+      - Step 2: all workloads below 640 routed pairs use dynamic 16×128 tile
+      - Step 3: static kernel is fully removed
+
+Ported from the b12x kernel library (https://github.com/lukealonso/b12x) to FlashInfer.
 
 This is the current static control-plane fusion step: keep the proven FC1/FC2
 compute body, but pull the route/pack frontend into the same resident kernel.

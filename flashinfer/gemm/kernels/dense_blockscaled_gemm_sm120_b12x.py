@@ -54,8 +54,8 @@ from flashinfer.cute_dsl.utils import (
 )
 
 
-# Vendored from b12x.cute.fp4 (so this kernel does not depend on the external
-# b12x package). Used only by the kernel's opt-in split-K atomic-reduction path.
+# Vendored from b12x.cute.fp4 (https://github.com/lukealonso/b12x). Used only
+# by the kernel's opt-in split-K atomic-reduction path.
 @dsl_user_op
 def get_ptr_as_int64(tensor: cute.Tensor, offset, *, loc=None, ip=None) -> Int64:
     """Get the memory address of tensor[offset] as Int64."""

@@ -1,7 +1,7 @@
 """
 MoEMicroKernel — micro-scheduled routed NVFP4 MoE kernel for SM120/SM121 (Blackwell).
 
-Ported from the b12x kernel library to FlashInfer.
+Ported from the b12x kernel library (https://github.com/lukealonso/b12x) to FlashInfer.
 
 This is the micro control-plane fusion step for decode workloads: keep the
 proven FC1/FC2 compute body, but pull the route/pack frontend into the same
