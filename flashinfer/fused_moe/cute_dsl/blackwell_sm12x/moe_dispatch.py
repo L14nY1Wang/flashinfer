@@ -284,15 +284,15 @@ def _select_dynamic_tile_mn(
     if ovr is not None:
         return ovr
     routed_rows = max(1, int(routed_rows))
-    # NOTE: sub-128 tile (16) is currently disabled pending TMA partition
-    # validation for dynamic-shaped tensors. The kernel code supports it
-    # (sa_tile_shape_mk, atom_shape adaptive), but the TMA GMEM view
-    # created by _make_tma_atoms_and_tensors produces dynamic first-mode
-    # shapes that the partition rejects. When enabled, uncomment below.
+    # Sub-128 tile (tile_m=16) requires passing pre-tiled GMEM tensors
+    # through _DynamicMoELaunch compatible with TMA partition static-shape
+    # requirements. Infrastructure is in place (sa_tile_shape_mk, atom_shape,
+    # SMEM max_fit) — needs _DynamicMoELaunch refactor or direct kernel
+    # passing like b12x. Uncomment when TMA pipeline is validated:
     # if routed_rows <= _DYNAMIC_SMALL_TILE_MAX_PAIRS:
     #     tile_m = 16
     # else:
-    #     tile_m = _LEVEL_TILE_M  # 128 (large prefill)
+    #     tile_m = _LEVEL_TILE_M
     tile_m = _LEVEL_TILE_M  # 128
     return (tile_m, _LEVEL_TILE_N)
 

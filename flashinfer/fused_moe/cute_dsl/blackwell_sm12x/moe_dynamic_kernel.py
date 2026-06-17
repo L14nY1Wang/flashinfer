@@ -1588,9 +1588,21 @@ class MoEDynamicKernel:
                     Int32(1),
                 )
 
-        gA = cute.local_tile(
-            mA, cute.slice_(self.tile_shape_mnk, (None, 0, None)), (None, None, None)
-        )
+        # gA / gSFA: TMA SMEM is always sized at sa_tile_shape_mk (128-row SF
+        # atom). For sub-128 MMA tiles the GMEM view must match — use the pre-
+        # tiled views from _make_tma_atoms_and_tensors directly, since re-tiling
+        # with tile_shape_mnk would produce a tile_m=16 GMEM view incompatible
+        # with the 128-row SMEM. tile_m=128 path is unchanged.
+        if cutlass.const_expr(self.sa_tiles_per_block > 1):
+            gA = mA       # pre-tiled with sa_tile_shape_mk
+            gSFA = mSFA   # pre-tiled with sfa_tile_shape_mk
+        else:
+            gA = cute.local_tile(
+                mA, cute.slice_(self.tile_shape_mnk, (None, 0, None)), (None, None, None)
+            )
+            gSFA = cute.local_tile(
+                mSFA, cute.slice_(self.tile_shape_mnk, (None, 0, None)), (None, None, None)
+            )
         # Tiled view over w13.
         # Gated: [2*I_tp, K, E] packed as [up, gate] across N.
         #   Up tiles: N-indices 0..gate_tile_cnt-1
