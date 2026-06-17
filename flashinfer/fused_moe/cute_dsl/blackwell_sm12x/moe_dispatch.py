@@ -284,11 +284,13 @@ def _select_dynamic_tile_mn(
     if ovr is not None:
         return ovr
     routed_rows = max(1, int(routed_rows))
-    # Sub-128 tile (tile_m=16) requires passing pre-tiled GMEM tensors
-    # through _DynamicMoELaunch compatible with TMA partition static-shape
-    # requirements. Infrastructure is in place (sa_tile_shape_mk, atom_shape,
-    # SMEM max_fit) — needs _DynamicMoELaunch refactor or direct kernel
-    # passing like b12x. Uncomment when TMA pipeline is validated:
+    # Sub-128 tile (tile_m=16) is fully implemented in the kernel infrastructure
+    # (sa_tile_shape_mk, atom_shape, SMEM max_fit, SF atom indexing) but disabled
+    # pending coordinated fixes across the MMA pipeline:
+    #   1. TMA GMEM partition must match 128-row SF atom SMEM ✓ (fixed in kernel)
+    #   2. MMA fragment partition must slice sSFA to tile_m sub-tile
+    #   3. SMEM-to-register copy layout must match sub-tile atom_shape
+    # Uncomment when all three are validated:
     # if routed_rows <= _DYNAMIC_SMALL_TILE_MAX_PAIRS:
     #     tile_m = 16
     # else:
